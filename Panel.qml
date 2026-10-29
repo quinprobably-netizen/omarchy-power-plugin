@@ -33,6 +33,79 @@ Panel {
   // lookup, so stay-awake goes through `omarchy toggle idle`, whose state file
   // the idle service watches.
   property bool stayAwake: false
+
+  // ---- qpc.battery-saver bridge: sleep action, hibernate delay, idle timers,
+  // master switch. Reads go through the plugin's conf-json and IPC status;
+  // writes through `battery-saver set`, pkexec for the root-side delay, and
+  // the enable/disable IPC. Every write re-reads so the controls snap back
+  // to the real value if a write fails.
+  readonly property string batterySaverTool: Quickshell.env("HOME") + "/.config/omarchy/plugins/qpc.battery-saver/bin/battery-saver"
+  property bool batterySaverPresent: false
+  // The headless service answers the status IPC; false until it does.
+  property bool saverServiceUp: false
+  property var saverConf: ({})
+  property bool saverEnabled: false
+  readonly property bool saverBusy: saverSetProc.running || hibernateProc.running || saverToggleProc.running
+  readonly property var sleepActions: [
+    { value: "suspend", label: Model.sleepActionLabel("suspend") },
+    { value: "suspend-then-hibernate", label: Model.sleepActionLabel("suspend-then-hibernate") },
+    { value: "hibernate", label: Model.sleepActionLabel("hibernate") }
+  ]
+
+  function refreshSaver() {
+    if (!saverConfProc.running) saverConfProc.running = true
+    if (batterySaverPresent && !saverStatusProc.running) saverStatusProc.running = true
+  }
+
+  function applySaverConf(raw) {
+    try {
+      var next = JSON.parse(String(raw || "").trim())
+      if (next && typeof next === "object") saverConf = next
+    } catch (error) {
+      // Empty output when the plugin is missing; presence is set from the exit code.
+    }
+  }
+
+  function applySaverStatus(raw) {
+    try {
+      var next = JSON.parse(String(raw || "").trim())
+      if (next && typeof next === "object" && next.enabled !== undefined) {
+        saverEnabled = next.enabled === true
+        saverServiceUp = true
+        return
+      }
+    } catch (error) {
+      // "Target not found." when the service plugin is disabled: not an error worth logging each tick.
+    }
+    saverServiceUp = false
+  }
+
+  function setSaverValue(key, value) {
+    if (saverSetProc.running) return
+    saverSetProc.command = [root.batterySaverTool, "set", String(key), String(value)]
+    saverSetProc.running = true
+  }
+
+  function setHibernateDelay(value) {
+    if (hibernateProc.running) return
+    hibernateProc.command = ["pkexec", "/usr/local/bin/battery-saver-sys", "set-hibernate-delay", String(value)]
+    hibernateProc.running = true
+  }
+
+  function toggleSaver() {
+    if (saverToggleProc.running) return
+    saverToggleProc.command = ["omarchy-shell", "battery-saver", root.saverEnabled ? "disable" : "enable"]
+    saverToggleProc.running = true
+  }
+
+  function idleWord(seconds) {
+    var n = Number(seconds)
+    return n > 0 ? Model.formatDuration(n) : "off"
+  }
+
+  readonly property string idleSummary: "Dim " + idleWord(saverConf.idle_dim_seconds)
+    + " · screen " + idleWord(saverConf.idle_screen_off_seconds)
+    + " · sleep " + idleWord(saverConf.idle_suspend_seconds)
   readonly property bool lidBusy: lidSetProc.running
   // The bar shows a marker only when lid close does more than dim the panel.
   readonly property bool lidIndicator: lidState.suspend === true || lidState.lock === true
@@ -197,6 +270,22 @@ Panel {
     return modeLabel()
   }
 
+  // Big line of the battery card: time left / to full, "Holding" at the
+  // charge cap, "Full" when full; otherwise the status phrase.
+  readonly property string headlineText: {
+    if (chargeThresholdActive) return "Holding"
+    if (batteryFull) return "Full"
+    var t = String(batteryInfo.time || "")
+    return (t !== "" && t !== "—" && t !== "-") ? t : heroStatusText
+  }
+  // Caption under it: the plain state (Discharging / Charging / Fully
+  // charged / Holding) plus the current draw.
+  readonly property string captionText: {
+    var base = chargeThresholdActive ? "At charge limit" : modeLabel()
+    var rate = batteryFlowIdle ? "" : String(batteryInfo.rate || "")
+    return rate !== "" ? base + " · " + rate : base
+  }
+
   function refresh() {
     if (!batteryPresent) return
 
@@ -206,6 +295,7 @@ Panel {
     refreshLid()
     refreshExtras()
     refreshStayAwake()
+    refreshSaver()
   }
 
   function updateKeyValue(raw, targetName) {
@@ -343,8 +433,49 @@ Panel {
     }
   }
 
+  Process {
+    id: saverConfProc
+    // bash wrapper: a missing plugin exits 1 instead of failing to spawn.
+    command: ["bash", "-c", "test -x \"$1\" && exec \"$1\" conf-json", "_", root.batterySaverTool]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applySaverConf(text) }
+    onExited: function(code, status) {
+      root.batterySaverPresent = (code === 0)
+      if (root.batterySaverPresent && !saverStatusProc.running) saverStatusProc.running = true
+    }
+  }
+
+  Process {
+    id: saverStatusProc
+    command: ["omarchy-shell", "battery-saver", "status"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applySaverStatus(text) }
+  }
+
+  Process {
+    id: saverSetProc
+    onExited: function(code, status) {
+      if (code !== 0) console.log("qpc.power: battery-saver set failed (" + code + ")")
+      root.refreshSaver()
+    }
+  }
+
+  Process {
+    id: hibernateProc
+    onExited: function(code, status) {
+      if (code !== 0) console.log("qpc.power: set-hibernate-delay failed or cancelled (" + code + ")")
+      root.refreshSaver()
+    }
+  }
+
+  Process {
+    id: saverToggleProc
+    onExited: function(code, status) {
+      if (code !== 0) console.log("qpc.power: battery-saver toggle failed (" + code + ")")
+      root.refreshSaver()
+    }
+  }
+
   // The bar marker needs the lid state before the panel is ever opened.
-  Component.onCompleted: refreshLid()
+  Component.onCompleted: { refreshLid(); refreshSaver() }
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
@@ -417,8 +548,8 @@ Panel {
     bar: root.bar
     open: root.opened && root.batteryPresent
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentHeight: panel.fittedContentHeight(columns.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -432,177 +563,100 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
-      Column {
-        id: column
+      // Two columns: status + profile on the left, settings cards on the right.
+      Row {
+        id: columns
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        spacing: Style.space(14)
-
-        // ---------- Hero: battery icon · title/status · percentage ----------
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroPercent.implicitHeight)
-
-          Text {
-            id: heroIcon
-            textFormat: Text.PlainText
-            text: root.batteryIcon()
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.display
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-
-            Behavior on color { ColorAnimation { duration: 200 } }
-          }
-
-          Column {
-            id: heroLabels
-            anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: heroPercent.left
-            anchors.rightMargin: Style.space(10)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(2)
-
-            Text {
-              text: "Battery"
-              color: root.bar.foreground
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.title
-              font.bold: true
-              elide: Text.ElideRight
-              width: parent.width
-            }
-
-            Text {
-              id: heroStatus
-              textFormat: Text.PlainText
-              text: root.heroStatusText.toUpperCase()
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-              elide: Text.ElideRight
-              width: parent.width
-            }
-          }
-
-          Text {
-            id: heroPercent
-            textFormat: Text.PlainText
-            text: root.batteryInfo.percentage || "—"
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.displayLarge
-            font.bold: true
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-
-            Behavior on color { ColorAnimation { duration: 200 } }
-          }
-        }
-
-        // ---------- Battery progress bar ----------
-        Item {
-          width: parent.width
-          implicitHeight: Style.space(8)
-
-          Rectangle {
-            id: barTrack
-            anchors.fill: parent
-            radius: height / 2
-            color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
-          }
-
-          Rectangle {
-            id: barFill
-            anchors.left: barTrack.left
-            anchors.verticalCenter: barTrack.verticalCenter
-            height: barTrack.height
-            radius: barTrack.radius
-            color: root.batteryFillColor
-            width: Math.max(barTrack.height, barTrack.width * root.batteryFraction)
-
-            Behavior on width { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
-            Behavior on color { ColorAnimation { duration: 220 } }
-
-            // Subtle pulse while charging — visible signal that energy is flowing in.
-            SequentialAnimation on opacity {
-              running: root.charging && !root.fullyCharged && root.opened
-              loops: Animation.Infinite
-              alwaysRunToEnd: true
-              NumberAnimation { from: 1.0; to: 0.55; duration: 950; easing.type: Easing.InOutSine }
-              NumberAnimation { from: 0.55; to: 1.0; duration: 950; easing.type: Easing.InOutSine }
-            }
-          }
-        }
-
-        // ---------- Stats ----------
-        // Visibility is intentionally only gated by "we've ever loaded data" so
-        // the section never collapses mid-transition. fullyCharged is *not* part
-        // of the condition: UPower briefly reports FullyCharged on plug-in when
-        // the battery sits above the charge-control start threshold, and we
-        // refuse to flicker the whole panel for that ~1s window.
-        Row {
-          visible: root.batteryInfo.percentage !== undefined
-          width: parent.width
-          spacing: Style.space(20)
-
-          Column {
-            width: (parent.width - parent.spacing) / 2
-            spacing: Style.spacing.labelGap
-            InfoPair { label: "Battery size"; value: root.batteryInfo.size || "" }
-            InfoPair { label: "Battery health"; value: root.extras.health || "—" }
-            InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
-          }
-
-          Column {
-            width: (parent.width - parent.spacing) / 2
-            spacing: Style.spacing.labelGap
-            InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit" : (root.discharging ? "Time left" : "Time to full")
-              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFlowIdle ? "-" : (root.batteryInfo.time || "—"))
-            }
-            InfoPair {
-              label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
-              value: root.chargeThresholdActive ? "Holding" : (root.batteryFull ? "-" : (root.batteryInfo.rate || ""))
-            }
-          }
-        }
-
-        // ---------- Power profile picker ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
+        spacing: Style.space(16)
 
         Column {
-          width: parent.width
-          spacing: Style.space(10)
+          id: leftCol
+          width: Style.space(230)
+          spacing: Style.space(12)
 
-          PanelSectionHeader {
-            text: "POWER PROFILE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          // ---------- Battery card ----------
+          Card {
+            bar: root.bar
+            width: parent.width
+
+            Row {
+              width: parent.width
+              spacing: Style.space(12)
+
+              RingGauge {
+                id: ring
+                anchors.verticalCenter: parent.verticalCenter
+                fraction: root.batteryFraction
+                text: root.batteryInfo.percentage || "—"
+                trackColor: Util.alpha(root.bar.foreground, 0.12)
+                fillColor: root.batteryFillColor
+                fontFamily: root.bar.fontFamily
+
+                // Subtle pulse while charging — visible signal that energy is flowing in.
+                SequentialAnimation on opacity {
+                  running: root.charging && !root.fullyCharged && root.opened
+                  loops: Animation.Infinite
+                  alwaysRunToEnd: true
+                  NumberAnimation { from: 1.0; to: 0.55; duration: 950; easing.type: Easing.InOutSine }
+                  NumberAnimation { from: 0.55; to: 1.0; duration: 950; easing.type: Easing.InOutSine }
+                }
+              }
+
+              Column {
+                width: parent.width - ring.width - parent.spacing
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(2)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.headlineText
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+
+                Text {
+                  id: heroStatus
+                  textFormat: Text.PlainText
+                  text: root.captionText
+                  color: root.bar.foreground
+                  opacity: 0.6
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                  width: parent.width
+                }
+              }
+            }
+
+            Column {
+              width: parent.width
+              spacing: Style.spacing.labelGap
+              InfoPair { label: "Health"; value: root.extras.health || "—" }
+              InfoPair { label: "Full charge"; value: root.extras.full_wh && root.extras.full_wh !== "—" ? root.extras.full_wh + " Wh" : (root.batteryInfo.size || "—") }
+              InfoPair { label: "Charge window"; value: root.extras.window || root.batteryInfo.threshold || "—" }
+            }
           }
 
-          Row {
-            id: profileRow
+          // ---------- Power profile card ----------
+          Card {
+            bar: root.bar
+            title: "POWER PROFILE"
             width: parent.width
-            spacing: Style.space(6)
-
-            readonly property real cellWidth: root.profiles.length > 0
-              ? (width - spacing * (root.profiles.length - 1)) / root.profiles.length
-              : 0
+            spacing: Style.space(4)
 
             Repeater {
               model: root.profiles
               Button {
                 required property var modelData
                 required property int index
-                width: profileRow.cellWidth
+                width: parent.width
+                leftAlign: true
                 iconText: root.profileIcon(String(modelData))
                 iconSize: Style.font.title
                 text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
@@ -610,7 +664,7 @@ Panel {
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 horizontalPadding: Style.spacing.controlPaddingX
-                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+                verticalPadding: Style.spacing.controlPaddingY
                 bordered: true
                 active: root.activeProfile === modelData
                 hasCursor: root.cursorActive && root.profileIndex === index
@@ -626,76 +680,154 @@ Panel {
           }
         }
 
-        // ---------- Lid closed ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
-
         Column {
-          width: parent.width
-          spacing: Style.space(6)
+          id: rightCol
+          width: columns.width - leftCol.width - columns.spacing
+          spacing: Style.space(12)
 
-          PanelSectionHeader {
-            text: "LID CLOSED"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          // ---------- Sleep card ----------
+          Card {
+            bar: root.bar
+            title: "SLEEP"
+            width: parent.width
+            visible: root.batterySaverPresent
+
+            SegmentedControl {
+              width: parent.width
+              bar: root.bar
+              model: root.sleepActions
+              value: root.saverConf.sleep_action
+              busy: root.saverBusy
+              onSelected: function(v) { root.setSaverValue("SLEEP_ACTION", v) }
+            }
+
+            Stepper {
+              bar: root.bar
+              label: "Hibernate after"
+              caption: editable ? "Asleep this long, then hibernate" : "Only used by Then hibernate"
+              presets: Model.HIBERNATE_PRESETS
+              value: root.saverConf.hibernate_delay
+              emptyLabel: "Default"
+              editable: root.saverConf.sleep_action === "suspend-then-hibernate"
+              busy: root.saverBusy
+              onChanged: function(v) { root.setHibernateDelay(v) }
+            }
           }
 
-          SwitchRow {
-            label: "Suspend"
-            description: root.lidState.suspend === true ? "Sleeps after closing. Skipped on an external display." : "Stays running with the lid shut"
-            checked: root.lidState.suspend === true
-            busy: root.lidBusy
-            onToggled: root.setLidFlag("suspend")
+          // ---------- Lid closed card ----------
+          Card {
+            bar: root.bar
+            title: "LID CLOSED"
+            width: parent.width
+
+            SwitchRow {
+              label: "Sleep"
+              description: root.lidState.suspend === true ? "Runs the sleep action above. Skipped on an external display." : "Stays running with the lid shut"
+              checked: root.lidState.suspend === true
+              busy: root.lidBusy
+              onToggled: root.setLidFlag("suspend")
+            }
+
+            SwitchRow {
+              label: "Lock session"
+              description: root.lidState.lock === true ? "Locks on close. Skipped on an external display." : "Session stays unlocked"
+              checked: root.lidState.lock === true
+              busy: root.lidBusy
+              onToggled: root.setLidFlag("lock")
+            }
+
+            SwitchRow {
+              label: "Backlight off"
+              description: root.lidState.backlightOff === true ? "Screen and keyboard light off, restored on open" : "Brightness left as is"
+              checked: root.lidState.backlightOff === true
+              busy: root.lidBusy
+              onToggled: root.setLidFlag("backlight-off")
+            }
           }
 
-          SwitchRow {
-            label: "Lock session"
-            description: root.lidState.lock === true ? "Locks on close. Skipped on an external display." : "Session stays unlocked"
-            checked: root.lidState.lock === true
-            busy: root.lidBusy
-            onToggled: root.setLidFlag("lock")
+          // ---------- Battery saver card ----------
+          Card {
+            bar: root.bar
+            title: "BATTERY SAVER"
+            width: parent.width
+            visible: root.batterySaverPresent
+
+            SwitchRow {
+              label: "Enabled"
+              description: root.saverServiceUp ? root.idleSummary : "Battery-saver service not loaded"
+              checked: root.saverServiceUp && root.saverEnabled
+              busy: saverToggleProc.running
+              onToggled: root.toggleSaver()
+            }
+
+            Stepper {
+              bar: root.bar
+              label: "Dim after"
+              presets: Model.IDLE_PRESETS
+              value: root.saverConf.idle_dim_seconds
+              busy: root.saverBusy
+              onChanged: function(v) { root.setSaverValue("IDLE_DIM_SECONDS", v) }
+            }
+
+            Stepper {
+              bar: root.bar
+              label: "Screen off after"
+              presets: Model.IDLE_PRESETS
+              value: root.saverConf.idle_screen_off_seconds
+              busy: root.saverBusy
+              onChanged: function(v) { root.setSaverValue("IDLE_SCREEN_OFF_SECONDS", v) }
+            }
+
+            Stepper {
+              bar: root.bar
+              label: "Sleep after"
+              presets: Model.IDLE_PRESETS
+              value: root.saverConf.idle_suspend_seconds
+              busy: root.saverBusy
+              onChanged: function(v) { root.setSaverValue("IDLE_SUSPEND_SECONDS", v) }
+            }
+
+            SwitchRow {
+              label: "Stay awake"
+              description: root.stayAwake ? "Idle lock and screensaver paused" : "Idle lock and screensaver as configured"
+              checked: root.stayAwake
+              busy: stayAwakeToggleProc.running
+              onToggled: root.toggleStayAwake()
+            }
+
+            SwitchRow {
+              visible: root.extras.kbd !== undefined && root.extras.kbd !== "none"
+              label: "Keyboard backlight"
+              description: root.extras.kbd === "on" ? "On" : "Off"
+              checked: root.extras.kbd === "on"
+              busy: kbdProc.running
+              onToggled: root.toggleKeyboardBacklight()
+            }
           }
 
-          SwitchRow {
-            label: "Backlight off"
-            description: root.lidState.backlightOff === true ? "Screen and keyboard light off, restored on open" : "Brightness left as is"
-            checked: root.lidState.backlightOff === true
-            busy: root.lidBusy
-            onToggled: root.setLidFlag("backlight-off")
-          }
-        }
+          // ---------- Session card (only without the battery-saver plugin) ----------
+          Card {
+            bar: root.bar
+            title: "SESSION"
+            width: parent.width
+            visible: !root.batterySaverPresent
 
-        // ---------- Session ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
+            SwitchRow {
+              label: "Stay awake"
+              description: root.stayAwake ? "Idle lock and screensaver paused" : "Idle lock and screensaver as configured"
+              checked: root.stayAwake
+              busy: stayAwakeToggleProc.running
+              onToggled: root.toggleStayAwake()
+            }
 
-        Column {
-          width: parent.width
-          spacing: Style.space(6)
-
-          PanelSectionHeader {
-            text: "SESSION"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          SwitchRow {
-            label: "Stay awake"
-            description: root.stayAwake ? "Idle lock and screensaver paused" : "Idle lock and screensaver as configured"
-            checked: root.stayAwake
-            busy: stayAwakeToggleProc.running
-            onToggled: root.toggleStayAwake()
-          }
-
-          SwitchRow {
-            visible: root.extras.kbd !== undefined && root.extras.kbd !== "none"
-            label: "Keyboard backlight"
-            description: root.extras.kbd === "on" ? "On" : "Off"
-            checked: root.extras.kbd === "on"
-            busy: kbdProc.running
-            onToggled: root.toggleKeyboardBacklight()
+            SwitchRow {
+              visible: root.extras.kbd !== undefined && root.extras.kbd !== "none"
+              label: "Keyboard backlight"
+              description: root.extras.kbd === "on" ? "On" : "Off"
+              checked: root.extras.kbd === "on"
+              busy: kbdProc.running
+              onToggled: root.toggleKeyboardBacklight()
+            }
           }
         }
       }
@@ -741,6 +873,8 @@ Panel {
         opacity: 0.6
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
         elide: Text.ElideRight
         width: parent.width
       }

@@ -2,10 +2,13 @@
 
 # qpc.power: extra battery facts and the keyboard backlight toggle.
 #
-#   power-stats status      key<TAB>value lines: health, kbd (on|off|none)
+#   power-stats status      key<TAB>value lines: health, kbd (on|off|none),
+#                           window (charge thresholds, e.g. 50–80%), full_wh
 #   power-stats kbd toggle  switch the keyboard backlight off / back on
 
 set -u
+
+SYS=${POWER_STATS_SYS:-/sys/class/power_supply}
 
 kbd_device() {
   local c
@@ -17,7 +20,7 @@ kbd_device() {
 
 health() {
   local b full design
-  for b in /sys/class/power_supply/BAT*; do
+  for b in "$SYS"/BAT*; do
     [[ -d $b ]] || continue
     if [[ -r $b/charge_full && -r $b/charge_full_design ]]; then
       full=$(<"$b/charge_full"); design=$(<"$b/charge_full_design")
@@ -39,9 +42,37 @@ kbd_state() {
   if (( $(brightnessctl -d "$dev" get 2>/dev/null || echo 0) > 0 )); then echo on; else echo off; fi
 }
 
+# Firmware charge window, e.g. "50–80%"; "—" when the battery has no thresholds.
+window() {
+  local b s e
+  for b in "$SYS"/BAT*; do
+    [[ -r $b/charge_control_start_threshold && -r $b/charge_control_end_threshold ]] || continue
+    s=$(<"$b/charge_control_start_threshold"); e=$(<"$b/charge_control_end_threshold")
+    printf '%s\u2013%s%%\n' "$s" "$e"; return 0
+  done
+  echo "—"
+}
+
+# Current full-charge energy in Wh with one decimal; from energy_full, or from
+# charge_full × voltage_min_design when the gauge is charge based.
+full_wh() {
+  local b
+  for b in "$SYS"/BAT*; do
+    [[ -d $b ]] || continue
+    if [[ -r $b/energy_full ]]; then
+      awk -v e="$(<"$b/energy_full")" 'BEGIN { printf "%.1f\n", e / 1000000 }'; return 0
+    elif [[ -r $b/charge_full && -r $b/voltage_min_design ]]; then
+      awk -v c="$(<"$b/charge_full")" -v v="$(<"$b/voltage_min_design")" 'BEGIN { printf "%.1f\n", c * v / 1000000000000 }'; return 0
+    fi
+  done
+  echo "—"
+}
+
 status() {
   printf 'health\t%s\n' "$(health)"
   printf 'kbd\t%s\n' "$(kbd_state)"
+  printf 'window\t%s\n' "$(window)"
+  printf 'full_wh\t%s\n' "$(full_wh)"
 }
 
 kbd_toggle() {

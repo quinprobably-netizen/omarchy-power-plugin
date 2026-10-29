@@ -10,6 +10,10 @@
 #   ~/.local/state/omarchy/toggles/lid/lock           lock the session
 #   ~/.local/state/omarchy/toggles/lid/backlight-off  save brightness, set 0%
 #
+# "suspend" runs `battery-saver sleep` from the qpc.battery-saver plugin when it
+# is installed (SLEEP_ACTION in ~/.config/omarchy/battery-saver.conf), else
+# plain `systemctl suspend`.
+#
 # Lock and suspend are skipped while an external monitor is connected, which
 # matches stock Omarchy (clamshell mode) and logind's HandleLidSwitchDocked.
 #
@@ -23,6 +27,7 @@
 set -u
 
 LID_DIR="${QPC_LID_DIR:-$HOME/.local/state/omarchy/toggles/lid}"
+BATTERY_SAVER="${QPC_BATTERY_SAVER:-$(dirname "${BASH_SOURCE[0]}")/../../qpc.battery-saver/bin/battery-saver}"
 FLAGS=(suspend lock backlight-off)
 DEFAULT_ON=(backlight-off)
 
@@ -78,7 +83,9 @@ run_close() {
         omarchy-hyprland-monitor-clamshell >/dev/null 2>&1 || true
         ;;
       suspend)
-        systemctl suspend
+        # qpc.battery-saver owns the SLEEP_ACTION setting (suspend,
+        # suspend-then-hibernate or hibernate); fall back to plain suspend.
+        if [[ -x $BATTERY_SAVER ]]; then "$BATTERY_SAVER" sleep; else systemctl suspend; fi
         ;;
     esac
   done < <(plan)

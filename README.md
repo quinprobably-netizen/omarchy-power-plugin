@@ -113,3 +113,22 @@ serving the previous instance in practice. After editing `Panel.qml`, run
 
 MIT. `Panel.qml` and `Model.js` derive from Omarchy's `omarchy.power` widget,
 also MIT.
+
+## Panel controls (2026-10-29 redesign)
+
+Two-column panel. Left: battery card (ring gauge, time left or to full, draw,
+health, full-charge energy, firmware charge window) and the power profile.
+Right: Sleep, Lid closed and Battery saver cards.
+
+| Control | Writes through |
+|---|---|
+| Sleep action (Suspend / Then hibernate / Hibernate) | `battery-saver set SLEEP_ACTION …` (qpc.battery-saver) |
+| Hibernate after | `pkexec /usr/local/bin/battery-saver-sys set-hibernate-delay …` (password-free for wheel once `50-battery-saver.rules` from the battery-saver plugin is installed in `/etc/polkit-1/rules.d`; otherwise a polkit dialog appears) |
+| Lid closed: Sleep / Lock session / Backlight off | `bin/lid-switch set …` |
+| Battery saver: Enabled | `omarchy-shell battery-saver enable|disable` |
+| Dim / Screen off / Sleep after | `battery-saver set IDLE_*_SECONDS …` |
+| Stay awake, Keyboard backlight | unchanged (`omarchy-toggle-idle`, `bin/power-stats kbd toggle`) |
+
+Without the qpc.battery-saver plugin the Sleep and Battery saver cards are
+hidden and a Session card holds the last two switches. Components live in
+`Card.qml`, `RingGauge.qml`, `SegmentedControl.qml` and `Stepper.qml`.

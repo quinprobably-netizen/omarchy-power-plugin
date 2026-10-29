@@ -4,7 +4,7 @@
   "name": "Power",
   "version": "1.0.0",
   "author": "qpc",
-  "description": "Battery, power profile, lid-close behavior, brightness, and system stats",
+  "description": "Battery, power profile, sleep action and hibernate delay, lid-close behavior, battery-saver idle timers, brightness, and system stats",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Power",
-    "description": "Battery, power profile, lid-close behavior, brightness, and system stats",
+    "description": "Battery, power profile, sleep action and hibernate delay, lid-close behavior, battery-saver idle timers, brightness, and system stats",
     "category": "System",
     "allowMultiple": false
   }
