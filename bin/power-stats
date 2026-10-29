@@ -1,0 +1,64 @@
+#!/bin/bash
+
+# qpc.power: extra battery facts and the keyboard backlight toggle.
+#
+#   power-stats status      key<TAB>value lines: health, kbd (on|off|none)
+#   power-stats kbd toggle  switch the keyboard backlight off / back on
+
+set -u
+
+kbd_device() {
+  local c
+  for c in /sys/class/leds/*kbd_backlight*; do
+    [[ -e $c ]] && { basename "$c"; return 0; }
+  done
+  return 1
+}
+
+health() {
+  local b full design
+  for b in /sys/class/power_supply/BAT*; do
+    [[ -d $b ]] || continue
+    if [[ -r $b/charge_full && -r $b/charge_full_design ]]; then
+      full=$(<"$b/charge_full"); design=$(<"$b/charge_full_design")
+    elif [[ -r $b/energy_full && -r $b/energy_full_design ]]; then
+      full=$(<"$b/energy_full"); design=$(<"$b/energy_full_design")
+    else
+      continue
+    fi
+    (( design > 0 )) || continue
+    printf '%d%%\n' $(( (full * 100 + design / 2) / design ))
+    return 0
+  done
+  echo "—"
+}
+
+kbd_state() {
+  local dev
+  dev=$(kbd_device) || { echo none; return; }
+  if (( $(brightnessctl -d "$dev" get 2>/dev/null || echo 0) > 0 )); then echo on; else echo off; fi
+}
+
+status() {
+  printf 'health\t%s\n' "$(health)"
+  printf 'kbd\t%s\n' "$(kbd_state)"
+}
+
+kbd_toggle() {
+  local dev
+  dev=$(kbd_device) || exit 1
+  if [[ $(kbd_state) == on ]]; then
+    brightnessctl -sd "$dev" set 0 >/dev/null
+  else
+    brightnessctl -rd "$dev" >/dev/null 2>&1 || true
+    # Nothing saved (or saved value was 0): fall back to full brightness.
+    (( $(brightnessctl -d "$dev" get) > 0 )) || brightnessctl -d "$dev" set 100% >/dev/null
+  fi
+  status
+}
+
+case "${1:-}" in
+  status) status ;;
+  kbd) [[ ${2:-} == toggle ]] && kbd_toggle || exit 1 ;;
+  *) echo "usage: power-stats status | kbd toggle" >&2; exit 1 ;;
+esac

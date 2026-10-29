@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# qpc.power: act on laptop lid close/open according to the panel's toggles.
+#
+# logind is configured to ignore the lid switch (see
+# /etc/systemd/logind.conf.d/30-ignore-lid-switch.conf), so everything that
+# happens on lid close is decided here, in userspace, from three flag files:
+#
+#   ~/.local/state/omarchy/toggles/lid/suspend        suspend after closing
+#   ~/.local/state/omarchy/toggles/lid/lock           lock the session
+#   ~/.local/state/omarchy/toggles/lid/backlight-off  save brightness, set 0%
+#
+# Lock and suspend are skipped while an external monitor is connected, which
+# matches stock Omarchy (clamshell mode) and logind's HandleLidSwitchDocked.
+#
+# Usage:
+#   lid-switch close|open          run the lid action (bound in Hyprland)
+#   lid-switch plan                print what `close` would do, one per line
+#   lid-switch status              JSON of the toggles for the panel
+#   lid-switch set <flag> on|off|toggle
+#   lid-switch init                create the flag dir with defaults
+
+set -u
+
+LID_DIR="${QPC_LID_DIR:-$HOME/.local/state/omarchy/toggles/lid}"
+FLAGS=(suspend lock backlight-off)
+DEFAULT_ON=(backlight-off)
+
+usage() {
+  sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+init() {
+  [[ -d $LID_DIR ]] && return 0
+  mkdir -p "$LID_DIR"
+  local f
+  for f in "${DEFAULT_ON[@]}"; do touch "$LID_DIR/$f"; done
+}
+
+valid_flag() {
+  local f
+  for f in "${FLAGS[@]}"; do [[ $1 == "$f" ]] && return 0; done
+  return 1
+}
+
+flag() {
+  [[ -f $LID_DIR/$1 ]]
+}
+
+external_monitor() {
+  omarchy-hw-external-monitors
+}
+
+plan() {
+  init
+  local docked=0
+  external_monitor && docked=1
+
+  flag backlight-off && echo backlight-off
+  if flag lock && (( ! docked )); then echo lock; fi
+  echo clamshell
+  if flag suspend && (( ! docked )); then echo suspend; fi
+}
+
+run_close() {
+  local action
+  while IFS= read -r action; do
+    case "$action" in
+      backlight-off)
+        brightnessctl -s set 0% >/dev/null 2>&1 || true
+        omarchy-brightness-keyboard --no-osd off >/dev/null 2>&1 || true
+        ;;
+      lock)
+        omarchy-system-lock >/dev/null 2>&1 || true
+        ;;
+      clamshell)
+        omarchy-hyprland-monitor-clamshell >/dev/null 2>&1 || true
+        ;;
+      suspend)
+        systemctl suspend
+        ;;
+    esac
+  done < <(plan)
+}
+
+run_open() {
+  omarchy-hyprland-monitor-clamshell >/dev/null 2>&1 || true
+  if flag backlight-off; then
+    brightnessctl -r >/dev/null 2>&1 || true
+    omarchy-brightness-keyboard --no-osd restore >/dev/null 2>&1 || true
+  fi
+}
+
+mode_label() {
+  if flag suspend; then
+    echo "Suspend"
+  elif flag lock; then
+    echo "Lock"
+  elif flag backlight-off; then
+    echo "Backlight off"
+  else
+    echo "Stay on"
+  fi
+}
+
+bool() {
+  if flag "$1"; then echo true; else echo false; fi
+}
+
+status() {
+  init
+  printf '{"suspend":%s,"lock":%s,"backlightOff":%s,"mode":"%s"}\n' \
+    "$(bool suspend)" "$(bool lock)" "$(bool backlight-off)" "$(mode_label)"
+}
+
+set_flag() {
+  local name="$1" action="${2:-toggle}"
+  valid_flag "$name" || { echo "lid-switch: unknown flag '$name'" >&2; exit 1; }
+  init
+  case "$action" in
+    on) touch "$LID_DIR/$name" ;;
+    off) rm -f "$LID_DIR/$name" ;;
+    toggle) if flag "$name"; then rm -f "$LID_DIR/$name"; else touch "$LID_DIR/$name"; fi ;;
+    *) usage ;;
+  esac
+  status
+}
+
+case "${1:-}" in
+  close) run_close ;;
+  open) run_open ;;
+  plan) plan ;;
+  status) status ;;
+  set) shift; (( $# >= 1 )) || usage; set_flag "$@" ;;
+  init) init ;;
+  *) usage ;;
+esac
