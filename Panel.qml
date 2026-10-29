@@ -548,7 +548,7 @@ Panel {
     bar: root.bar
     open: root.opened && root.batteryPresent
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentWidth: panel.fittedContentWidth(Style.space(540))
     contentHeight: panel.fittedContentHeight(columns.implicitHeight)
 
     PanelKeyCatcher {
@@ -569,12 +569,12 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        spacing: Style.space(16)
+        spacing: Style.space(12)
 
         Column {
           id: leftCol
           width: Style.space(230)
-          spacing: Style.space(12)
+          spacing: Style.space(8)
 
           // ---------- Battery card ----------
           Card {
@@ -583,10 +583,12 @@ Panel {
 
             Row {
               width: parent.width
-              spacing: Style.space(12)
+              spacing: Style.space(10)
 
               RingGauge {
                 id: ring
+                size: 52
+                stroke: 5
                 anchors.verticalCenter: parent.verticalCenter
                 fraction: root.batteryFraction
                 text: root.batteryInfo.percentage || "—"
@@ -678,12 +680,6 @@ Panel {
               }
             }
           }
-        }
-
-        Column {
-          id: rightCol
-          width: columns.width - leftCol.width - columns.spacing
-          spacing: Style.space(12)
 
           // ---------- Sleep card ----------
           Card {
@@ -704,7 +700,7 @@ Panel {
             Stepper {
               bar: root.bar
               label: "Hibernate after"
-              caption: editable ? "Asleep this long, then hibernate" : "Only used by Then hibernate"
+              caption: editable ? "Before hibernating" : "Then hibernate only"
               presets: Model.HIBERNATE_PRESETS
               value: root.saverConf.hibernate_delay
               emptyLabel: "Default"
@@ -713,6 +709,12 @@ Panel {
               onChanged: function(v) { root.setHibernateDelay(v) }
             }
           }
+        }
+
+        Column {
+          id: rightCol
+          width: columns.width - leftCol.width - columns.spacing
+          spacing: Style.space(8)
 
           // ---------- Lid closed card ----------
           Card {
@@ -722,7 +724,7 @@ Panel {
 
             SwitchRow {
               label: "Sleep"
-              description: root.lidState.suspend === true ? "Runs the sleep action above. Skipped on an external display." : "Stays running with the lid shut"
+              description: root.lidState.suspend === true ? "Runs the sleep action. Skipped on an external display." : "Stays running"
               checked: root.lidState.suspend === true
               busy: root.lidBusy
               onToggled: root.setLidFlag("suspend")
@@ -730,7 +732,7 @@ Panel {
 
             SwitchRow {
               label: "Lock session"
-              description: root.lidState.lock === true ? "Locks on close. Skipped on an external display." : "Session stays unlocked"
+              description: root.lidState.lock === true ? "Locks on close. Skipped on an external display." : "Stays unlocked"
               checked: root.lidState.lock === true
               busy: root.lidBusy
               onToggled: root.setLidFlag("lock")
@@ -738,7 +740,7 @@ Panel {
 
             SwitchRow {
               label: "Backlight off"
-              description: root.lidState.backlightOff === true ? "Screen and keyboard light off, restored on open" : "Brightness left as is"
+              description: root.lidState.backlightOff === true ? "Screen and keyboard light off until reopened" : "Brightness left as is"
               checked: root.lidState.backlightOff === true
               busy: root.lidBusy
               onToggled: root.setLidFlag("backlight-off")
@@ -845,7 +847,7 @@ Panel {
     signal toggled()
 
     width: parent.width
-    implicitHeight: Math.max(labels.implicitHeight, toggle.implicitHeight) + Style.space(6)
+    implicitHeight: Math.max(labels.implicitHeight, toggle.implicitHeight) + Style.space(2)
 
     Column {
       id: labels

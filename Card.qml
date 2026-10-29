@@ -11,8 +11,8 @@ Item {
 
   property QtObject bar: null
   property string title: ""
-  property real padding: Style.space(12)
-  property real spacing: Style.space(6)
+  property real padding: Style.space(10)
+  property real spacing: Style.space(4)
 
   readonly property color fg: bar ? bar.foreground : Commons.Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -35,7 +35,7 @@ Item {
     anchors.right: parent.right
     anchors.top: parent.top
     anchors.margins: root.padding
-    spacing: Style.space(8)
+    spacing: Style.space(6)
 
     PanelSectionHeader {
       visible: root.title !== ""

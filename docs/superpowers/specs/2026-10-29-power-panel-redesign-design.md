@@ -209,3 +209,12 @@ widget is unchanged; confirm the panel is usable on a vertical bar.
 - Changing the bar widget.
 - Light-theme tuning beyond using theme tokens (all colours derive from the
   theme foreground/background so other themes keep working).
+
+## Revision 2026-10-29 (compact pass)
+
+After the first build the panel was judged too tall. Changes: Sleep card
+moved to the left column under Power profile, Lid closed moved to the right
+column above Battery saver so both columns end level; panel 540 px wide,
+column gap 12, card gap 8, card padding 10, inner spacing 4; ring 52/5;
+switch and stepper rows lose 4 px each; segmented control 85% of control
+height; shorter lid and hibernate captions. Height dropped by about a third.

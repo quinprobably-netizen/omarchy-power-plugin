@@ -49,7 +49,7 @@ Item {
   Keys.onRightPressed: function(event) { stepBy(1); event.accepted = true }
 
   width: parent ? parent.width : implicitWidth
-  implicitHeight: Math.max(labels.implicitHeight, controls.implicitHeight) + Style.space(6)
+  implicitHeight: Math.max(labels.implicitHeight, controls.implicitHeight) + Style.space(2)
   opacity: editable ? 1 : 0.4
 
   Column {
@@ -97,8 +97,8 @@ Item {
       foreground: root.fg
       fontFamily: root.fontFamily
       fontSize: Style.font.bodySmall
-      horizontalPadding: Style.space(8)
-      verticalPadding: Style.space(2)
+      horizontalPadding: Style.space(7)
+      verticalPadding: Style.space(1)
       opacity: root.canDecrease ? 1 : 0.35
       onClicked: root.stepBy(-1)
     }
@@ -120,8 +120,8 @@ Item {
       foreground: root.fg
       fontFamily: root.fontFamily
       fontSize: Style.font.bodySmall
-      horizontalPadding: Style.space(8)
-      verticalPadding: Style.space(2)
+      horizontalPadding: Style.space(7)
+      verticalPadding: Style.space(1)
       opacity: root.canIncrease ? 1 : 0.35
       onClicked: root.stepBy(1)
     }

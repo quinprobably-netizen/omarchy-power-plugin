@@ -36,7 +36,7 @@ Item {
     return Math.round(width * labelWeight(i) / totalWeight)
   }
 
-  implicitHeight: Style.spacing.controlHeight
+  implicitHeight: Math.round(Style.spacing.controlHeight * 0.85)
   opacity: busy ? 0.5 : 1
 
   function select(v) {
